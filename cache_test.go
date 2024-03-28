@@ -1769,3 +1769,15 @@ func TestGetWithExpiration(t *testing.T) {
 		t.Error("expiration for e is in the past")
 	}
 }
+
+func TestDefer(t *testing.T) {
+	var m sync.RWMutex
+	testFun := func() {
+		m.RLock()
+		defer m.RUnlock()
+		return
+	}
+	testFun()
+	m.RLock()
+	m.RUnlock()
+}

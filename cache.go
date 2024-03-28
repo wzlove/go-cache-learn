@@ -38,11 +38,13 @@ type Cache struct {
 }
 
 type cache struct {
+	//默认过期时间
 	defaultExpiration time.Duration
 	items             map[string]Item
 	mu                sync.RWMutex
-	onEvicted         func(string, interface{})
-	janitor           *janitor
+	//过期时执行的函数
+	onEvicted func(string, interface{})
+	janitor   *janitor
 }
 
 // Add an item to the cache, replacing any existing item. If the duration is 0
@@ -55,8 +57,10 @@ func (c *cache) Set(k string, x interface{}, d time.Duration) {
 		d = c.defaultExpiration
 	}
 	if d > 0 {
+		//计算当前key的过期时间
 		e = time.Now().Add(d).UnixNano()
 	}
+	//加锁添加到cache中
 	c.mu.Lock()
 	c.items[k] = Item{
 		Object:     x,
@@ -89,6 +93,7 @@ func (c *cache) SetDefault(k string, x interface{}) {
 
 // Add an item to the cache only if an item doesn't already exist for the given
 // key, or if the existing item has expired. Returns an error otherwise.
+// 当k不存在的时候添加到cache中,若存在则返回错误
 func (c *cache) Add(k string, x interface{}, d time.Duration) error {
 	c.mu.Lock()
 	_, found := c.get(k)
@@ -103,6 +108,7 @@ func (c *cache) Add(k string, x interface{}, d time.Duration) error {
 
 // Set a new value for the cache key only if it already exists, and the existing
 // item hasn't expired. Returns an error otherwise.
+// 替换元素
 func (c *cache) Replace(k string, x interface{}, d time.Duration) error {
 	c.mu.Lock()
 	_, found := c.get(k)
@@ -117,6 +123,7 @@ func (c *cache) Replace(k string, x interface{}, d time.Duration) error {
 
 // Get an item from the cache. Returns the item or nil, and a bool indicating
 // whether the key was found.
+// 从缓存中取未过期的数据
 func (c *cache) Get(k string) (interface{}, bool) {
 	c.mu.RLock()
 	// "Inlining" of get and Expired
@@ -911,7 +918,9 @@ func (c *cache) Delete(k string) {
 	}
 }
 
+// 从cache中删除该key,并返回是否需要 执行过期函数
 func (c *cache) delete(k string) (interface{}, bool) {
+	//若删除函数不为空,需要返回该对象并执行 对应删除函数
 	if c.onEvicted != nil {
 		if v, found := c.items[k]; found {
 			delete(c.items, k)
@@ -929,11 +938,15 @@ type keyAndValue struct {
 
 // Delete all expired items from the cache.
 func (c *cache) DeleteExpired() {
+	//定义过期的元素集合
 	var evictedItems []keyAndValue
 	now := time.Now().UnixNano()
+	//加锁防止并发冲突
 	c.mu.Lock()
+	//遍历cache中的所有元素
 	for k, v := range c.items {
 		// "Inlining" of expired
+		//当value设置了过期时间并且过期了
 		if v.Expiration > 0 && now > v.Expiration {
 			ov, evicted := c.delete(k)
 			if evicted {
@@ -942,6 +955,7 @@ func (c *cache) DeleteExpired() {
 		}
 	}
 	c.mu.Unlock()
+	//执行过期函数
 	for _, v := range evictedItems {
 		c.onEvicted(v.key, v.value)
 	}
@@ -1069,8 +1083,10 @@ func (c *cache) Flush() {
 }
 
 type janitor struct {
+	//时间间隔
 	Interval time.Duration
-	stop     chan bool
+	//是否停止的标识
+	stop chan bool
 }
 
 func (j *janitor) Run(c *cache) {
@@ -1078,8 +1094,10 @@ func (j *janitor) Run(c *cache) {
 	for {
 		select {
 		case <-ticker.C:
+			//定时清理
 			c.DeleteExpired()
 		case <-j.stop:
+			//若该工作者停止后,断开定时器
 			ticker.Stop()
 			return
 		}
@@ -1096,12 +1114,14 @@ func runJanitor(c *cache, ci time.Duration) {
 		stop:     make(chan bool),
 	}
 	c.janitor = j
+	//异步运行具体操作--从cache中定时删除过期的key
 	go j.Run(c)
 }
 
 func newCache(de time.Duration, m map[string]Item) *cache {
-	if de == 0 {
-		de = -1
+	// 若时间为0,则表示不过期
+	if de == DefaultExpiration {
+		de = NoExpiration
 	}
 	c := &cache{
 		defaultExpiration: de,
@@ -1110,6 +1130,7 @@ func newCache(de time.Duration, m map[string]Item) *cache {
 	return c
 }
 
+// 以管理员创建cache
 func newCacheWithJanitor(de time.Duration, ci time.Duration, m map[string]Item) *Cache {
 	c := newCache(de, m)
 	// This trick ensures that the janitor goroutine (which--granted it
@@ -1118,8 +1139,11 @@ func newCacheWithJanitor(de time.Duration, ci time.Duration, m map[string]Item) 
 	// garbage collected, the finalizer stops the janitor goroutine, after
 	// which c can be collected.
 	C := &Cache{c}
+	//若需要自动清理
 	if ci > 0 {
+		//运行管理员
 		runJanitor(c, ci)
+		//延续一个GC周期,在该对象被GC后标记停止,防止后台定时任务的存在导致GC无法回收
 		runtime.SetFinalizer(C, stopJanitor)
 	}
 	return C
@@ -1131,6 +1155,7 @@ func newCacheWithJanitor(de time.Duration, ci time.Duration, m map[string]Item) 
 // manually. If the cleanup interval is less than one, expired items are not
 // deleted from the cache before calling c.DeleteExpired().
 func New(defaultExpiration, cleanupInterval time.Duration) *Cache {
+	//先初始化Map
 	items := make(map[string]Item)
 	return newCacheWithJanitor(defaultExpiration, cleanupInterval, items)
 }
